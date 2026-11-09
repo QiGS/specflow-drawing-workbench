@@ -1,0 +1,3 @@
+-r requirements.txt
+# Version used for the actual local PDF render and page/SHA tests.
+PyMuPDF==2.1

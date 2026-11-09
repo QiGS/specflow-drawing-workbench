@@ -1,0 +1,417 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Unreviewed multimodal drawing extraction payload v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "operation",
+    "raw_text",
+    "observations",
+    "fields",
+    "bom",
+    "missing_information",
+    "warnings",
+    "image_texts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "operation": {
+      "enum": [
+        "transcribe_line",
+        "extract_page"
+      ]
+    },
+    "raw_text": {
+      "type": "string",
+      "maxLength": 200000
+    },
+    "observations": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "$ref": "#/$defs/observation"
+      }
+    },
+    "fields": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "$ref": "#/$defs/field"
+      }
+    },
+    "bom": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/bom_row"
+      }
+    },
+    "missing_information": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      }
+    },
+    "image_texts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "image_id",
+          "raw_text",
+          "legibility"
+        ],
+        "properties": {
+          "image_id": {
+            "$ref": "#/$defs/id"
+          },
+          "raw_text": {
+            "type": "string",
+            "maxLength": 200000
+          },
+          "legibility": {
+            "enum": [
+              "clear",
+              "uncertain",
+              "unreadable"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "transcribe_line"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "fields": {
+            "maxItems": 0
+          },
+          "bom": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "nullable_text": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 2000
+    },
+    "numeric_raw": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 100,
+      "description": "Exact visible numeric characters; preserve decimal places and punctuation; no automatic normalization."
+    },
+    "evidence_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "region": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height",
+        "coordinate_space",
+        "basis"
+      ],
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "coordinate_space": {
+          "const": "supplied_image_normalized_top_left"
+        },
+        "basis": {
+          "const": "model_estimate_unreviewed"
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "raw_text",
+        "region",
+        "legibility",
+        "image_id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "visible_text",
+            "visual_structure"
+          ]
+        },
+        "raw_text": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/region"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "legibility": {
+          "enum": [
+            "clear",
+            "uncertain",
+            "unreadable"
+          ]
+        },
+        "image_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "tolerance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw",
+        "kind",
+        "amplitude_raw",
+        "upper_raw",
+        "lower_raw",
+        "evidence_ids"
+      ],
+      "properties": {
+        "raw": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "kind": {
+          "enum": [
+            "symmetric",
+            "asymmetric",
+            "general_note",
+            "uncertain"
+          ]
+        },
+        "amplitude_raw": {
+          "$ref": "#/$defs/numeric_raw"
+        },
+        "upper_raw": {
+          "$ref": "#/$defs/numeric_raw"
+        },
+        "lower_raw": {
+          "$ref": "#/$defs/numeric_raw"
+        },
+        "evidence_ids": {
+          "$ref": "#/$defs/evidence_ids"
+        }
+      }
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "category",
+        "value_raw",
+        "nominal_raw",
+        "unit_raw",
+        "tolerance",
+        "limit_raw",
+        "object",
+        "view",
+        "state",
+        "evidence_ids",
+        "association_evidence_ids",
+        "certainty",
+        "review_status"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "category": {
+          "enum": [
+            "identity",
+            "structure",
+            "dimension",
+            "material",
+            "process",
+            "standard",
+            "performance",
+            "other"
+          ]
+        },
+        "value_raw": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "nominal_raw": {
+          "$ref": "#/$defs/numeric_raw"
+        },
+        "unit_raw": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "tolerance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/tolerance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit_raw": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "object": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "view": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "state": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "evidence_ids": {
+          "$ref": "#/$defs/evidence_ids"
+        },
+        "association_evidence_ids": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "certainty": {
+          "enum": [
+            "clear",
+            "uncertain"
+          ]
+        },
+        "review_status": {
+          "const": "pending"
+        }
+      }
+    },
+    "bom_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "item_raw",
+        "part_number_raw",
+        "name_raw",
+        "quantity_raw",
+        "unit_raw",
+        "material_raw",
+        "evidence_ids",
+        "review_status"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "item_raw": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "part_number_raw": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "name_raw": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "quantity_raw": {
+          "$ref": "#/$defs/numeric_raw"
+        },
+        "unit_raw": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "material_raw": {
+          "$ref": "#/$defs/nullable_text"
+        },
+        "evidence_ids": {
+          "$ref": "#/$defs/evidence_ids"
+        },
+        "review_status": {
+          "const": "pending"
+        }
+      }
+    }
+  }
+}
