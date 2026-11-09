@@ -29,6 +29,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 import app
 from contract import strict_json
 from provider import Config, ProviderFailure, redact
+import geometry
 
 ROOT = Path(__file__).resolve().parent
 MAX_UPLOAD = 30 * 1024 * 1024
@@ -181,6 +182,7 @@ class WorkbenchState:
         self.bootstrap_token=secrets.token_urlsafe(32)
         self.session_token=None;self.session_expires=0
         self.document=None
+        self.stage_one={}
         self.lock=threading.Lock();self.slot=threading.BoundedSemaphore(1)
         self.dispatch=dispatch or app.dispatch
 
@@ -283,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(origins)!=1 or origins[0]!=self.origin:
             self.send(403,{'error':'same_origin_required','message':'拒绝跨来源请求。'});return
         if not self.session_ok():return
-        if self.path not in ('/api/upload','/api/extract'):
+        if self.path not in ('/api/upload','/api/extract','/api/geometry','/api/stage-one'):
             self.send(404,{'error':'not_found'});return
         if not self.state.slot.acquire(blocking=False):
             self.send(429,{'error':'busy','message':'已有处理任务，请等待完成。'});return
@@ -294,21 +296,37 @@ class Handler(BaseHTTPRequestHandler):
                     raise InputError('仅支持PDF、PNG、JPG和WebP。',415,'unsupported_file')
                 doc=decode_document(self.read_body(MAX_UPLOAD),self.headers.get('X-File-Name'),content)
                 self.state.document=doc
+                self.state.stage_one={}
                 self.send(200,{'document':doc.public(),'message':'文件已在本机读取，尚未调用模型。'});return
             if self.headers.get_content_type()!='application/json':raise InputError('提取请求必须为JSON。')
-            value=strict_json(self.read_body(4096))
+            value=strict_json(self.read_body(10*1024*1024 if self.path=='/api/stage-one' else 4096))
+            if self.path=='/api/stage-one':
+                if not isinstance(value,dict) or set(value)!={'document_id','page','result'}:raise InputError('导入仅接受当前文档ID、页码和结果。')
+                doc=self.state.document;page=value['page'];result=value['result']
+                if not doc or value['document_id']!=doc.id or type(page) is not int or not 1<=page<=len(doc.pages):raise InputError('导入文档或页码无效。')
+                validated_result_state(result)
+                geometry.stage_observations(result,doc.source_sha256,page)
+                self.state.stage_one[page]=result
+                self.send(200,{'state':'imported_unreviewed','result':result,'selected_page':page});return
             if not isinstance(value,dict) or set(value)!={'document_id','page'}:
                 raise InputError('仅接受已上传文档ID和页码；不接受路径、endpoint、模型或额外提示参数。')
             doc=self.state.document;page=value['page']
             if not doc or value['document_id']!=doc.id or type(page) is not int or not 1<=page<=len(doc.pages):
                 raise InputError('文档或页码无效，请重新上传或选择页面。')
             p=doc.pages[page-1]
+            if self.path=='/api/geometry':
+                stage=self.state.stage_one.get(page)
+                if stage is None:raise InputError('请先提取当前页标注，或导入同图纸的标注结果JSON。',409,'stage_one_required')
+                config=Config.from_env(timeout=float(os.environ.get('DRAWING_VLM_TIMEOUT','180')),max_tokens=int(os.environ.get('DRAWING_VLM_MAX_TOKENS','10000')),json_mode=True)
+                result,audit=geometry.run_prepared(config,p.png,doc.source_sha256,stage,page)
+                self.send(200,{'state':'geometry_candidates','result':result,'audit':audit,'selected_page':page});return
             request={'images':[{'image_base64':base64.b64encode(p.png).decode(),
                                'image_id':f'doc_{doc.id}_p{page}','page':page,
                                'source_document_sha256':doc.source_sha256}], 'operation':'extract_page'}
             response=self.state.dispatch(request)
             result=response.get('result',{})
             display_state=validated_result_state(result)
+            self.state.stage_one[page]=result
             self.send(200,{'state':display_state,'document':doc.public(),'selected_page':page,
                            'result':result,'audit':response.get('audit',{}),'scope':'full_page_only'})
         except ProviderFailure as exc:

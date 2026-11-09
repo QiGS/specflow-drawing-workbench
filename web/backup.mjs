@@ -1,3 +1,4 @@
+import {validateGeometryImport} from './geometry-ui.mjs?v=11';
 /** Restore JSON data only. Original files and generated output are never restored or fetched. */
 import {parseDocument} from './engine.mjs?v=9';
 import {generateInstructions, defaultRules, defaultTemplate} from './instructions.mjs?v=10';
@@ -24,7 +25,7 @@ function date(value, path) { string(value,path);if (!Number.isFinite(Date.parse(
 // response audits. Keep hashes and the existing human `history` records instead.
 const privateKeys = new Set(['audit','rawaudit','modelaudit','rawmodelaudit','rawresponse','rawresponsetext','rawresponsetextredacted','rawrequest','requestbody','requestpayload','apikey','authorization','bearer','secret','secretkey','clientsecret','secrets','credentials','accesstoken','refreshtoken','authtoken','password','token','imageurl','imagedata','base64','headers']);
 const privateKey = key => privateKeys.has(key.replace(/[_-]/g,'').toLowerCase());
-const visualKeys = new Set(['visionRuns','visionQuarantine','referenceSuggestions','packagingVariants','rawVisionField','provenance','unitSource']);
+const visualKeys = new Set(['visionRuns','visionQuarantine','referenceSuggestions','packagingVariants','rawVisionField','provenance','unitSource','geometryResult']);
 const visualField = value => value && (value.method==='vlm-import'||value.sourceCategory==='model_evidence'||own(value,'visionRunId')||own(value,'rawVisionField'));
 function boundedText(value,path,max=200000) {
   string(value,path);if(value.length>max)fail(path,`文本不能超过 ${max} 字符`);
@@ -307,6 +308,8 @@ export function restoreBackup(data) {
         page.drawingOCR.passes.forEach((pass,j)=>{const q=`${p}.drawingOCR.passes[${j+1}]`;object(pass,q);strings(pass,['id','text'],q);for(const k of ['regions','words'])if(own(pass,k)){array(pass[k],q+'.'+k);pass[k].forEach((r,n)=>region(r,`${q}.${k}[${n+1}]`));}});
       }
     });
+    if(doc.geometryResult)doc.geometryResult=validateGeometryImport(doc,doc.geometryResult);
+    if(doc.geometryPreview){object(doc.geometryPreview,path+'.geometryPreview');pageRef(doc.geometryPreview.page,path+'.geometryPreview.page',pages);thumbnail(doc.geometryPreview.data,path+'.geometryPreview.data');if(doc.geometryPreview.rotation!==0)fail(path,'几何预览需为原始方向');}
     // Only legacy backups without fields are reparsed. Existing edits/rejections are authoritative.
     if(!own(doc,'fields')){
       const parsed=parseDocument(doc.pages);doc.fields=parsed.fields;
