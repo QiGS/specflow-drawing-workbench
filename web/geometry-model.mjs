@@ -1,4 +1,4 @@
-import catalog from './parameter-catalog.mjs?v=13';
+import catalog from './parameter-catalog.mjs?v=14';
 /** Deterministic local geometry from explicitly mapped dimensions; never executes model code. */
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export const MODEL_TEMPLATES=Object.freeze([

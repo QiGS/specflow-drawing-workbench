@@ -1,0 +1,12 @@
+docs/workspace-preview.jpg
+__pycache__/
+.DS_Store
+
+docs/qa-*.jpg
+node_modules/
+.env
+.env.*
+!.env.example
+.dev.vars
+.wrangler/
+.local/

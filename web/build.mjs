@@ -1,6 +1,11 @@
 import {mkdir,copyFile,cp,rm} from 'node:fs/promises';
+import {build} from 'esbuild';
 await rm('dist',{recursive:true,force:true});
-await mkdir('dist',{recursive:true});
-for(const file of ['index.html','workspace.css','workspace.mjs','engine.mjs','ingest.mjs','instructions.mjs','business.mjs','backup.mjs','drawing.mjs','reparse.mjs','vision-ui.mjs','vision-adapter.mjs','vision-facts.mjs','geometry-ui.mjs','geometry.css','geometry-model.mjs','parameter-catalog.json','parameter-catalog.mjs'])await copyFile(file,'dist/'+file);
-await cp('vendor','dist/vendor',{recursive:true});
-console.log('Static package prepared in dist');
+await mkdir('dist/client',{recursive:true});
+await mkdir('dist/.openai',{recursive:true});
+for(const file of ['index.html','workspace.css','workspace.mjs','engine.mjs','ingest.mjs','instructions.mjs','business.mjs','backup.mjs','drawing.mjs','reparse.mjs','vision-ui.mjs','vision-adapter.mjs','vision-facts.mjs','geometry-ui.mjs','geometry-live.mjs','geometry.css','geometry-model.mjs','parameter-catalog.json','parameter-catalog.mjs'])await copyFile(file,'dist/client/'+file);
+await cp('vendor','dist/client/vendor',{recursive:true});
+await copyFile('.openai/hosting.json','dist/.openai/hosting.json');
+await cp('drizzle','dist/.openai/drizzle',{recursive:true});
+await build({entryPoints:['worker/index.mjs'],outfile:'dist/server/index.js',bundle:true,format:'esm',platform:'browser',target:'es2022',minify:false,sourcemap:false});
+console.log('Worker and browser assets prepared in dist');
