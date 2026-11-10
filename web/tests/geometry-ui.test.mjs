@@ -44,3 +44,18 @@ test('high resolution transient preview uses its own rotation and zoom while met
  const html=geometryPanel(d);assert.match(html,/src="data:image\/png;base64,aGlyZXM="/);assert.match(html,/id="geometryZoom"/);assert.match(html,/value="1.5"/);assert.match(html,/geometry-image-viewport/);assert.match(html,/x="200" y="200"/);
  r.parameters[0].limit='max 12.5';assert.throws(()=>validateGeometryImport(d,r),/限值类型/);
 });
+
+test('unverified model coordinates remain hidden until their independent details is explicitly opened',async()=>{
+ const {readFile}=await import('node:fs/promises');
+ const r=result(),before=structuredClone(r),html=geometryPanel({...doc(),geometryResult:r},'mounting_hole_diameter');
+ assert.match(html,/<details class="geometry-localization"><summary>查看模型估计定位（待复核）<\/summary>/);
+ assert(!/<details[^>]*class="geometry-localization"[^>]*\bopen(?:\s|=|>)/.test(html));
+ assert.match(html,/<svg class="geometry-estimated-overlay" style="display:none"/);
+ assert.match(html,/图上定位<\/dt><dd class="geometry-location-pending">待人工复核/);
+ assert.match(html,/可能偏移或指向错误部位/);
+ assert.match(html,/data-geometry-key="mounting_hole_diameter" aria-pressed="true"/);
+ assert.match(html,/Ø 9.50/);assert.match(html,/id="geometryZoom"/);assert.match(html,/geometry-object/);assert.match(html,/geometry-leader/);
+ assert.deepEqual(r,before);
+ const css=await readFile(new URL('../geometry.css',import.meta.url),'utf8');
+ assert.match(css,/\.geometry-localization\[open\]\+\.geometry-image-viewport \.geometry-estimated-overlay\{display:block!important\}/);
+});

@@ -1,4 +1,4 @@
-import {validateGeometryImport} from './geometry-ui.mjs?v=12';
+import {validateGeometryImport} from './geometry-ui.mjs?v=13';
 /** Restore JSON data only. Original files and generated output are never restored or fetched. */
 import {parseDocument} from './engine.mjs?v=9';
 import {generateInstructions, defaultRules, defaultTemplate} from './instructions.mjs?v=10';

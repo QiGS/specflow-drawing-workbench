@@ -29,6 +29,15 @@ class GeometryHTTPTests(unittest.TestCase):
    self.assertEqual(status,200);self.assertEqual(json.loads(body)['state'],'geometry_candidates')
    args=call.call_args.args;self.assertEqual(args[2],doc['source_sha256']);self.assertEqual(args[3],stage);self.assertEqual(args[4],1);self.assertTrue(args[1].startswith(b'\x89PNG'))
    status,_,_=self.post('/api/geometry',{'document_id':doc['id'],'page':1,'endpoint':'https://example.com'});self.assertEqual(status,400)
+ def test_geometry_route_uses_explicit_server_configuration_and_exposes_safe_settings(self):
+  doc,stage=self.upload_and_stage()
+  settings={'DRAWING_GEOMETRY_TIMEOUT':'600','DRAWING_GEOMETRY_MAX_TOKENS':'24000','DRAWING_GEOMETRY_THINKING_MODE':'enabled','DRAWING_GEOMETRY_THINKING_BUDGET':'8000'}
+  with patch.dict('os.environ',settings),patch('workbench.geometry.run_prepared',return_value=({'schema_version':'geometry-2.0','parameters':[]},{})) as call:
+   status,_,_=self.post('/api/geometry',{'document_id':doc['id'],'page':1});self.assertEqual(status,200)
+   config=call.call_args.args[0];self.assertEqual(config.timeout,600);self.assertEqual(config.max_tokens,24000);self.assertEqual(config.thinking_mode,'enabled');self.assertEqual(config.thinking_budget,8000)
+   status,_,body=self.req('GET','/api/session');self.assertEqual(status,200)
+   session=json.loads(body);self.assertEqual(session['geometry_configuration']['timeout_seconds'],600)
+   self.assertNotIn('fake-provider-secret-never-network',body.decode());self.assertTrue(session['configured'])
  def test_geometry_reuses_session_origin_and_single_flight_controls(self):
   doc,stage=self.upload_and_stage();value=json.dumps({'document_id':doc['id'],'page':1})
   status,_,_=self.req('POST','/api/geometry',value,{'Content-Type':'application/json','Origin':'https://example.com'});self.assertEqual(status,403)

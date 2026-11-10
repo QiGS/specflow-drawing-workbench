@@ -52,6 +52,11 @@ test('semantic parameter kind prevents tolerances, area, thread and composite la
  assert.equal(m.status,'blocked');assert.deepEqual(m.triangles,[]);
 });
 
+test('reference-only dimensions never become definite model dimensions',()=>{
+ for(const value of ['0.68 REF.','0.68 REFERENCE','0.68 参考尺寸'])assert.throws(()=>dimensionInMm(parameter('solder_tail_length','.68',{value_raw:value})),/参考/);
+ const r=boxResult();r.parameters[2].value_raw='3 REF.';assert.equal(model(r,'box').status,'blocked');
+});
+
 test('suggestions do not choose between repeated instances and use current tube taxonomy',()=>{
  const r=ringResult();r.parameters.push(parameter('mounting_hole_diameter','5',{id:'second-hole'}));
  assert.equal(suggestMapping(r,'ring').inner,undefined);
@@ -117,4 +122,11 @@ test('reuse comparison distinguishes unit-normalized nominals from engineering c
  b.parameters[0].nominal_raw='25.5';[row]=compareGeometry(a,b);assert.equal(row.status,'different');assert(Math.abs(row.delta_mm-.1)<1e-12);
  b.parameters[0].limit='max';assert.equal(compareGeometry(a,b)[0].status,'unresolved');b.parameters[0].limit=null;b.parameters.push(parameter('total_length','25.4',{id:'other'}));assert.equal(compareGeometry(a,b)[0].status,'ambiguous');
  assert.equal(compareGeometry(a,result([]))[0].status,'ambiguous');
+});
+
+test('reference dimensions are not definite solids and width-depth-height can define an explicit envelope',()=>{
+ assert.throws(()=>dimensionInMm(parameter('total_length','10',{value_raw:'10 REF.'})),/参考/);
+ const r=result([parameter('total_width','6.5'),parameter('total_depth','2.3'),parameter('total_height','5.4')]);
+ const m=model(r,'box');assert.equal(m.status,'reference_only');assert.deepEqual(m.dimensions,{length:6.5,width:2.3,height:5.4});
+ const html=reconstructionPanel(r,{template:'box',angle:0});assert.match(html,/id="modelAngle"[^>]*value="0"/);
 });

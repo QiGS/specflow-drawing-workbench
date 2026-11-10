@@ -176,7 +176,9 @@ def run_prepared(config,encoded,document_hash,stage=None,page=1,transport=http_t
     audit={'operation':'associate_geometry','prompt_version':CURRENT_VERSION,'stage_one_used':stage is not None,'image_sources':[source for source,_ in pairs],'image_payload_bytes':sum(len(data) for _,data in pairs),'document_sha256':document_hash,'page':page,'rendered_image_sha256':sha(encoded),'request_sha256':sha(body),'provider':config.audit()}
     start=time.monotonic()
     try:status,raw=transport(config.base_url.rstrip('/')+'/chat/completions',{'Content-Type':'application/json','Authorization':'Bearer '+config.api_key},body,config.timeout)
-    except Exception as exc:raise ProviderFailure('geometry_transport_error',str(exc),audit,secret=config.api_key) from None
+    except Exception as exc:
+        audit.update(http_status=None,elapsed_seconds=round(time.monotonic()-start,3),transport_error_type=type(exc).__name__,transport_error_message=redact(str(exc),config.api_key))
+        raise ProviderFailure('geometry_transport_error',str(exc),audit,secret=config.api_key) from None
     audit.update(http_status=status,elapsed_seconds=round(time.monotonic()-start,3))
     if len(raw)>MAX_RESPONSE_BYTES:raise ProviderFailure('geometry_response_too_large','Response too large',audit,secret=config.api_key)
     audit['raw_response_text_redacted']=redact(raw.decode('utf8',errors='replace'),config.api_key)
@@ -186,7 +188,12 @@ def run_prepared(config,encoded,document_hash,stage=None,page=1,transport=http_t
         if choice.get('finish_reason')=='length':raise ValueError('Model response truncated')
         content=choice['message'].get('content')
         if not isinstance(content,str) or not content.strip():raise ValueError('No final model content')
-        result=validate(strict_json(content),observations,document_hash,page)
+        from geometry_protocol import adapt as adapt_protocol, VERSION as PROTOCOL_VERSION
+        original_payload=strict_json(content)
+        adapted_payload,protocol_changes=adapt_protocol(original_payload,observations)
+        audit['protocol_adapter']={'version':PROTOCOL_VERSION,'changes':protocol_changes,'engineering_values_modified':False}
+        result=validate(adapted_payload,observations,document_hash,page)
+        if protocol_changes:result['protocol_normalization_count']=len(protocol_changes)
         result.update(model=response.get('model',config.model),elapsed_seconds=audit['elapsed_seconds'])
     except (ValueError,KeyError,IndexError,TypeError) as exc:raise ProviderFailure('geometry_invalid_output',str(exc),audit,secret=config.api_key) from None
     return result,redact(audit,config.api_key)
@@ -194,12 +201,13 @@ def run_prepared(config,encoded,document_hash,stage=None,page=1,transport=http_t
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--document',required=True);p.add_argument('--stage-one',help='Optional previously validated transcription for the same source page');p.add_argument('--page',type=int,default=1)
-    p.add_argument('--model');p.add_argument('--output',required=True);p.add_argument('--timeout',type=float,default=180)
-    p.add_argument('--max-tokens',type=int,default=10000);p.add_argument('--max-edge',type=int,default=4096)
+    from geometry_config import add_cli_arguments,cli_options,from_env as geometry_configuration
+    p.add_argument('--model');p.add_argument('--output',required=True)
+    add_cli_arguments(p)
     a=p.parse_args();out=Path(a.output).expanduser().resolve()
     try:
         if out.exists():raise ValueError('Output directory exists; choose a new directory')
-        config=Config.from_env(a.model,timeout=a.timeout,max_tokens=a.max_tokens,max_edge=a.max_edge,json_mode=True)
+        config=geometry_configuration(a.model,**cli_options(a))
         stage=None
         if a.stage_one:
             stage_path=Path(a.stage_one)

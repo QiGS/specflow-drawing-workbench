@@ -1,9 +1,9 @@
-import {reconstructionPanel,reusePanel,suggestMapping,createConstrainedModel,modelSVG,modelSTL,modelSCAD,projectedModelSVG} from './geometry-model.mjs?v=12';
-import {geometryPanel,validateGeometryImport} from './geometry-ui.mjs?v=12';
+import {reconstructionPanel,reusePanel,suggestMapping,createConstrainedModel,modelSVG,modelSTL,modelSCAD,projectedModelSVG} from './geometry-model.mjs?v=13';
+import {geometryPanel,validateGeometryImport} from './geometry-ui.mjs?v=13';
 import {createVisionUI,visionResults} from './vision-ui.mjs?v=10';
 import {validateAndMapVision,mergeVisionResult,applyReferenceSuggestion} from './vision-adapter.mjs?v=10';
 import {reconcileExtraction} from './reparse.mjs?v=9';
-import {restoreBackup} from './backup.mjs?v=12';
+import {restoreBackup} from './backup.mjs?v=13';
 import {reconcileQuote,quoteIssues,applyHistoricalPrices,reviewSamples} from './business.mjs?v=9';
 import {defaultRules,defaultTemplate,generateInstructions} from './instructions.mjs?v=10';
 import {parseDocument, searchDocuments, compareDocuments, buildInstructions, calculateQuote, editDimension} from './engine.mjs?v=9';

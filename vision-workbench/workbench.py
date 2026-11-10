@@ -30,6 +30,7 @@ import app
 from contract import strict_json
 from provider import Config, ProviderFailure, redact
 import geometry
+import geometry_config
 
 ROOT = Path(__file__).resolve().parent
 MAX_UPLOAD = 30 * 1024 * 1024
@@ -178,11 +179,12 @@ def decode_document(data, name, content_type):
 
 
 class WorkbenchState:
-    def __init__(self, dispatch=None):
+    def __init__(self, dispatch=None,geometry_options=None):
         self.bootstrap_token=secrets.token_urlsafe(32)
         self.session_token=None;self.session_expires=0
         self.document=None
         self.stage_one={}
+        self.geometry_options=dict(geometry_options or {})
         self.lock=threading.Lock();self.slot=threading.BoundedSemaphore(1)
         self.dispatch=dispatch or app.dispatch
 
@@ -245,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(303,b'',extra={'Location':'/','Set-Cookie':f'{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}'})
             return
         if parsed.path=='/health' and not parsed.query:
-            try:Config.from_env().validate();configured=True
+            try:geometry_config.from_env(**self.state.geometry_options);configured=True
             except (ValueError,TypeError):configured=False
             self.send(200,{'service':'local-drawing-workbench','configured':configured,'provider_connectivity_tested':False})
             return
@@ -255,9 +257,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path in assets:
             name,mime=assets[parsed.path];self.send(200,(ROOT/'static'/name).read_bytes(),mime);return
         if parsed.path=='/api/session':
-            try:Config.from_env().validate();configured=True
+            try:geometry_config.from_env(**self.state.geometry_options);configured=True
             except (ValueError,TypeError):configured=False
-            self.send(200,{'configured':configured,'model':os.environ.get('DRAWING_VLM_MODEL',''),
+            settings=geometry_config.public_settings(geometry_config.from_env(**self.state.geometry_options)) if configured else None
+            self.send(200,{'configured':configured,'model':os.environ.get('DRAWING_VLM_MODEL',''),'geometry_configuration':settings,
                           'pdf_supported':pdf_module() is not None,'provider_connectivity_tested':False,
                           'credential_expires':os.environ.get('DRAWING_VLM_CREDENTIAL_EXPIRES') if re.fullmatch(r'\d{4}-\d{2}-\d{2}',os.environ.get('DRAWING_VLM_CREDENTIAL_EXPIRES','')) else None,
                           'full_page_only':True,'limits':{'file_bytes':MAX_UPLOAD,'pdf_pages':MAX_PAGES,'render_pixels':MAX_RENDER_PIXELS}});return
@@ -316,7 +319,7 @@ class Handler(BaseHTTPRequestHandler):
             p=doc.pages[page-1]
             if self.path=='/api/geometry':
                 stage=self.state.stage_one.get(page)
-                config=Config.from_env(timeout=float(os.environ.get('DRAWING_VLM_TIMEOUT','180')),max_tokens=int(os.environ.get('DRAWING_VLM_MAX_TOKENS','10000')),json_mode=True)
+                config=geometry_config.from_env(**self.state.geometry_options)
                 result,audit=geometry.run_prepared(config,p.png,doc.source_sha256,stage,page)
                 self.send(200,{'state':'geometry_candidates','result':result,'audit':audit,'selected_page':page});return
             request={'images':[{'image_base64':base64.b64encode(p.png).decode(),
@@ -343,16 +346,17 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args):pass  # Never log bootstrap query tokens or input content.
 
 
-def create_server(port=8765,dispatch=None):
+def create_server(port=8765,dispatch=None,geometry_options=None):
     if type(port) is not int or not 0<=port<=65535:raise ValueError('Invalid port')
     server=ThreadingHTTPServer(('127.0.0.1',port),Handler);server.daemon_threads=True
-    server.state=WorkbenchState(dispatch)
+    server.state=WorkbenchState(dispatch,geometry_options)
     return server
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--port',type=int,default=8765);a=p.parse_args()
-    server=create_server(a.port)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--port',type=int,default=8765)
+    geometry_config.add_cli_arguments(p,prefix='geometry-');a=p.parse_args()
+    server=create_server(a.port,geometry_options=geometry_config.cli_options(a,prefix='geometry-'))
     print(f'本机图纸工作台：http://127.0.0.1:{server.server_port}/bootstrap?token={server.state.bootstrap_token}',flush=True)
     print('仅本机监听；入口token为一次性会话凭据，不是模型密钥。尚未调用模型。',flush=True)
     try:server.serve_forever()

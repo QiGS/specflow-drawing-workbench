@@ -1,9 +1,9 @@
-import catalog from './parameter-catalog.mjs?v=12';
+import catalog from './parameter-catalog.mjs?v=13';
 /** Deterministic local geometry from explicitly mapped dimensions; never executes model code. */
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export const MODEL_TEMPLATES=Object.freeze([
  {key:'ring',label:'环形接触片 · 局部简化',description:'只建立理想同心圆环。实际舌片外轮廓、接线筒、偏心和过渡段不由这些尺寸确定。',slots:[['outer','环形端头外径',['tongue_width']],['inner','安装孔内径',['mounting_hole_diameter']],['height','舌片厚度',['tongue_thickness','material_thickness','total_thickness']]]},
- {key:'box',label:'矩形外包络',description:'只表示长、宽、高占用的空间；不包含孔、卡扣、内腔、针脚或倒角。',slots:[['length','总长度',['total_length']],['width','总宽度',['total_width']],['height','总高度',['total_height']]]},
+ {key:'box',label:'矩形外包络',description:'只表示长、宽、高占用的空间；不包含孔、卡扣、内腔、针脚或倒角。',slots:[['length','X向外形跨距（长或宽）',['total_length','total_width']],['width','Y向外形跨距（宽或深）',['total_width','total_depth']],['height','Z向总高度',['total_height']]]},
  {key:'tube',label:'接线筒 · 理想圆筒段',description:'只表示直圆筒，假定内外圆同轴且壁厚均匀。实际压接变形、内台阶、绝缘套和倒角未重建。',slots:[['outer','接线筒外径',['crimp_barrel_outer_diameter']],['inner','接线筒内径',['crimp_barrel_inner_diameter']],['height','接线筒长度',['crimp_barrel_length']]]},
 ]);
 const pid=p=>p.id||p.key;
@@ -12,6 +12,7 @@ export function dimensionInMm(p){
  if(p?.status!=='candidate')throw Error('尚未识别出数值');
  const definition=catalog.find(d=>d.key===p.key);if(!definition||!['length','diameter'].includes(definition.kind))throw Error('该参数不是可用的线性尺寸；面积、角度、形位公差和复合标注不能充当实体尺寸');
  if(p.limit)throw Error('上限、下限或范围不能当作确定的建模尺寸');
+ if(/\bREF(?:ERENCE)?\b|参考尺寸/i.test(p.value_raw||''))throw Error('参考尺寸不能直接作为确定的实体尺寸');
  if(!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(p.nominal_raw||''))throw Error('需要单一明确的名义尺寸');
  const units={mm:1,'毫米':1,in:25.4,inch:25.4,inches:25.4,'英寸':25.4};
  const unit=String(p.unit_raw||'').toLowerCase();
@@ -22,7 +23,7 @@ export function dimensionInMm(p){
 }
 export function suggestMapping(result,templateKey){
  const template=MODEL_TEMPLATES.find(x=>x.key===templateKey)||MODEL_TEMPLATES[0],mapping={};
- for(const [slot,,keys] of template.slots){const found=(result?.parameters||[]).filter(p=>keys.includes(p.key)&&p.status==='candidate');if(found.length===1)mapping[slot]=pid(found[0]);}
+ for(const [slot,,keys] of template.slots){for(const key of keys){const found=(result?.parameters||[]).filter(p=>p.key===key&&p.status==='candidate'&&!Object.values(mapping).includes(pid(p)));if(found.length===1){mapping[slot]=pid(found[0]);break;}if(found.length>1)break;}}
  return mapping;
 }
 function trianglesBox(l,w,h){const p=[[0,0,0],[l,0,0],[l,w,0],[0,w,0],[0,0,h],[l,0,h],[l,w,h],[0,w,h]],faces=[[0,3,2,1],[4,5,6,7],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]];return faces.flatMap(f=>[[p[f[0]],p[f[1]],p[f[2]]],[p[f[0]],p[f[2]],p[f[3]]]]);}
@@ -52,8 +53,9 @@ export function projectedModelSVG(model,angle=35,tilt=55){
  angle=Number(angle);tilt=Number(tilt);if(!Number.isFinite(angle)||!Number.isFinite(tilt))throw Error('旋转角度无效');
  const a=angle*Math.PI/180,t=tilt*Math.PI/180,project=([x,y,z])=>{const xx=x*Math.cos(a)-y*Math.sin(a),yy=x*Math.sin(a)+y*Math.cos(a);return [xx,yy*Math.cos(t)-z*Math.sin(t),yy*Math.sin(t)+z*Math.cos(t)];};
  const faces=model.triangles.map(tr=>tr.map(project)),pts=faces.flat(),xs=pts.map(v=>v[0]),ys=pts.map(v=>v[1]),minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys),s=Math.min(530/(maxX-minX||1),280/(maxY-minY||1));
+ const light=[-.35,-.55,.76],lightLength=Math.hypot(...light),shade=f=>{const u=f[1].map((v,i)=>v-f[0][i]),v=f[2].map((v,i)=>v-f[0][i]),n=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]],length=Math.hypot(...n),diffuse=length?Math.max(0,n.reduce((sum,value,i)=>sum+value*light[i],0)/(length*lightLength)):0;return `hsl(151 24% ${Math.round(34+30*diffuse)}%)`;};
  faces.sort((a,b)=>a.reduce((s,p)=>s+p[2],0)-b.reduce((s,p)=>s+p[2],0));
- return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 400" role="img" aria-label="可旋转的局部三维几何"><rect width="760" height="400" fill="#f3f7f5"/><text x="20" y="28" fill="#245441" style="font:14px sans-serif">${esc(model.template_label)} · 候选名义尺寸 · 非完整零件</text>${faces.map((f,i)=>`<polygon points="${f.map(p=>`${fmt(380+(p[0]-(minX+maxX)/2)*s)},${fmt(210+(p[1]-(minY+maxY)/2)*s)}`).join(' ')}" fill="hsl(151 22% ${44+(i%6)*4}%)" stroke="#446e5d" stroke-width="0.2"/>`).join('')}<text x="20" y="382" fill="#85602b" style="font:12px sans-serif">缺失的部件没有填造。旋转查看仅用于理解这一局部形状。</text></svg>`;
+ return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 400" role="img" aria-label="可旋转的局部三维几何"><rect width="760" height="400" fill="#f3f7f5"/><text x="20" y="28" fill="#245441" style="font:14px sans-serif">${esc(model.template_label)} · 候选名义尺寸 · 非完整零件</text>${faces.map(f=>{const color=shade(f);return `<polygon points="${f.map(p=>`${fmt(380+(p[0]-(minX+maxX)/2)*s)},${fmt(210+(p[1]-(minY+maxY)/2)*s)}`).join(' ')}" fill="${color}" stroke="${color}" stroke-width="0.3" stroke-linejoin="round"/>`;}).join('')}<text x="20" y="382" fill="#85602b" style="font:12px sans-serif">缺失的部件没有填造。旋转查看仅用于理解这一局部形状。</text></svg>`;
 }
 export function reconstructionPanel(result,state={}){
  const key=state.template||'ring',template=MODEL_TEMPLATES.find(t=>t.key===key)||MODEL_TEMPLATES[0],mapping=state.mapping||suggestMapping(result,template.key),model=createConstrainedModel(result,{template:template.key,mapping}),params=(result?.parameters||[]).filter(p=>p.status==='candidate');
