@@ -316,7 +316,6 @@ class Handler(BaseHTTPRequestHandler):
             p=doc.pages[page-1]
             if self.path=='/api/geometry':
                 stage=self.state.stage_one.get(page)
-                if stage is None:raise InputError('请先提取当前页标注，或导入同图纸的标注结果JSON。',409,'stage_one_required')
                 config=Config.from_env(timeout=float(os.environ.get('DRAWING_VLM_TIMEOUT','180')),max_tokens=int(os.environ.get('DRAWING_VLM_MAX_TOKENS','10000')),json_mode=True)
                 result,audit=geometry.run_prepared(config,p.png,doc.source_sha256,stage,page)
                 self.send(200,{'state':'geometry_candidates','result':result,'audit':audit,'selected_page':page});return

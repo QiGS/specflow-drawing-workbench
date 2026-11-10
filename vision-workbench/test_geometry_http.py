@@ -18,7 +18,9 @@ class GeometryHTTPTests(unittest.TestCase):
  def post(self,path,value):return self.req('POST',path,json.dumps(value),{'Origin':self.origin,'Content-Type':'application/json'})
  def test_imported_stage_requires_original_sha_then_geometry_uses_server_owned_page(self):
   doc,stage=self.upload_and_stage()
-  status,_,_=self.post('/api/geometry',{'document_id':doc['id'],'page':1});self.assertEqual(status,409)
+  with patch('workbench.geometry.run_prepared',return_value=({'schema_version':'geometry-2.0','parameters':[]},{})) as direct_call:
+   status,_,_=self.post('/api/geometry',{'document_id':doc['id'],'page':1});self.assertEqual(status,200)
+   self.assertIsNone(direct_call.call_args.args[3]);self.assertEqual(direct_call.call_args.args[2],doc['source_sha256'])
   bad=json.loads(json.dumps(stage));bad['sources'][0]['document_sha256']='a'*64
   status,_,_=self.post('/api/stage-one',{'document_id':doc['id'],'page':1,'result':bad});self.assertEqual(status,400)
   status,_,_=self.post('/api/stage-one',{'document_id':doc['id'],'page':1,'result':stage});self.assertEqual(status,200)

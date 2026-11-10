@@ -1,0 +1,71 @@
+import catalog from './parameter-catalog.mjs?v=12';
+/** Deterministic local geometry from explicitly mapped dimensions; never executes model code. */
+const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+export const MODEL_TEMPLATES=Object.freeze([
+ {key:'ring',label:'环形接触片 · 局部简化',description:'只建立理想同心圆环。实际舌片外轮廓、接线筒、偏心和过渡段不由这些尺寸确定。',slots:[['outer','环形端头外径',['tongue_width']],['inner','安装孔内径',['mounting_hole_diameter']],['height','舌片厚度',['tongue_thickness','material_thickness','total_thickness']]]},
+ {key:'box',label:'矩形外包络',description:'只表示长、宽、高占用的空间；不包含孔、卡扣、内腔、针脚或倒角。',slots:[['length','总长度',['total_length']],['width','总宽度',['total_width']],['height','总高度',['total_height']]]},
+ {key:'tube',label:'接线筒 · 理想圆筒段',description:'只表示直圆筒，假定内外圆同轴且壁厚均匀。实际压接变形、内台阶、绝缘套和倒角未重建。',slots:[['outer','接线筒外径',['crimp_barrel_outer_diameter']],['inner','接线筒内径',['crimp_barrel_inner_diameter']],['height','接线筒长度',['crimp_barrel_length']]]},
+]);
+const pid=p=>p.id||p.key;
+const fmt=x=>Number(x.toPrecision(12)).toString();
+export function dimensionInMm(p){
+ if(p?.status!=='candidate')throw Error('尚未识别出数值');
+ const definition=catalog.find(d=>d.key===p.key);if(!definition||!['length','diameter'].includes(definition.kind))throw Error('该参数不是可用的线性尺寸；面积、角度、形位公差和复合标注不能充当实体尺寸');
+ if(p.limit)throw Error('上限、下限或范围不能当作确定的建模尺寸');
+ if(!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(p.nominal_raw||''))throw Error('需要单一明确的名义尺寸');
+ const units={mm:1,'毫米':1,in:25.4,inch:25.4,inches:25.4,'英寸':25.4};
+ const unit=String(p.unit_raw||'').toLowerCase();
+ if(!Object.hasOwn(units,unit))throw Error('线性单位未确认或不是长度单位');
+ const value=Number(p.nominal_raw)*units[unit];
+ if(!Number.isFinite(value)||value<0.00001||value>100000)throw Error('建模尺寸超出支持范围');
+ return {value,factor:units[unit],sourceUnit:p.unit_raw};
+}
+export function suggestMapping(result,templateKey){
+ const template=MODEL_TEMPLATES.find(x=>x.key===templateKey)||MODEL_TEMPLATES[0],mapping={};
+ for(const [slot,,keys] of template.slots){const found=(result?.parameters||[]).filter(p=>keys.includes(p.key)&&p.status==='candidate');if(found.length===1)mapping[slot]=pid(found[0]);}
+ return mapping;
+}
+function trianglesBox(l,w,h){const p=[[0,0,0],[l,0,0],[l,w,0],[0,w,0],[0,0,h],[l,0,h],[l,w,h],[0,w,h]],faces=[[0,3,2,1],[4,5,6,7],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]];return faces.flatMap(f=>[[p[f[0]],p[f[1]],p[f[2]]],[p[f[0]],p[f[2]],p[f[3]]]]);}
+function trianglesTube(outer,inner,height){const faces=[],n=64,r=outer/2,q=inner/2,point=(radius,i,z)=>[radius*Math.cos(i*2*Math.PI/n),radius*Math.sin(i*2*Math.PI/n),z];for(let i=0;i<n;i++){const j=(i+1)%n,a=point(r,i,0),b=point(r,j,0),c=point(r,i,height),d=point(r,j,height),e=point(q,i,0),f=point(q,j,0),g=point(q,i,height),h=point(q,j,height);for(const [v0,v1,v2,v3] of [[a,b,d,c],[f,e,g,h],[c,d,h,g],[b,a,e,f]])faces.push([v0,v1,v2],[v0,v2,v3]);}return faces;}
+export function createConstrainedModel(result,{template:templateKey='ring',mapping={}}={}){
+ const template=MODEL_TEMPLATES.find(x=>x.key===templateKey);if(!template)throw Error('不支持的形状模板');
+ const issues=[],dimensions={},sources=[],used=new Set();
+ for(const [slot,label,allowedKeys] of template.slots){const matches=(result?.parameters||[]).filter(p=>pid(p)===mapping[slot]);const p=matches.length===1?matches[0]:null;try{if(!p)throw Error('请选择原图中的对应参数');if(used.has(pid(p)))throw Error('同一个标注不能重复充当多个建模尺寸');if(!allowedKeys.includes(p.key))throw Error('参数类别与该几何尺寸不对应');const dim=dimensionInMm(p);used.add(pid(p));dimensions[slot]=dim.value;sources.push({slot,label,parameter_id:pid(p),key:p.key,instance_label:p.instance_label||p.label||p.key,component:p.component||null,view:p.view||null,source_page:result.page,value_raw:p.value_raw,nominal_raw:p.nominal_raw,unit_raw:p.unit_raw,tolerance_raw:p.tolerance_raw,conversion_factor_to_mm:dim.factor,evidence_text:p.evidence_text,evidence_ids:[...(p.evidence_ids||[])],annotation_region:p.annotation_region||null,object_region:p.object_region||null});}catch(e){issues.push(label+'：'+e.message);}}
+ if(['ring','tube'].includes(template.key)&&dimensions.outer-dimensions.inner<Math.max(0.00001,dimensions.outer*0.000001))issues.push('内径必须小于外径且壁厚需在建模精度范围内，当前尺寸相互冲突');
+ // Measurements from distinct named components must never silently assemble into one part.
+ if(new Set(sources.map(s=>s.component).filter(Boolean)).size>1)issues.push('所选尺寸来自不同部件，不能组合为同一个几何体');
+ const base={schema_version:'constraint-model-1.0',template:template.key,template_label:template.label,document_sha256:result?.document_sha256||null,page:result?.page||null,units:'mm',status:issues.length?'blocked':'reference_only',dimensions,sources,issues,assumptions:[template.description,'所选参数仍是待复核的识别候选；模型使用名义值，不模拟公差极限。','这是局部几何/空间示意，不是完整零件或制造批准；材料、工艺、形位公差和配合仍需分别核对。'],engineering_approval:false};
+ return {...base,triangles:issues.length?[]:template.key==='box'?trianglesBox(dimensions.length,dimensions.width,dimensions.height):trianglesTube(dimensions.outer,dimensions.inner,dimensions.height)};
+}
+export function modelSTL(model){if(model.status!=='reference_only'||!model.triangles?.length)throw Error('尺寸不足，不能导出三维几何');return 'solid specflow_reference_only_mm\n'+model.triangles.map(([a,b,c])=>{const u=b.map((x,i)=>x-a[i]),v=c.map((x,i)=>x-a[i]),normal=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]],len=Math.hypot(...normal);return 'facet normal '+normal.map(x=>fmt(x/len)).join(' ')+'\n outer loop\n'+[a,b,c].map(v=>'  vertex '+v.map(fmt).join(' ')).join('\n')+'\n endloop\nendfacet';}).join('\n')+'\nendsolid specflow_reference_only_mm\n';}
+export function modelSCAD(model){if(model.status!=='reference_only')throw Error('尺寸不足，不能导出三维几何');const d=model.dimensions;return '// 仅局部理想化几何；毫米；非制造模型。\n// '+model.document_sha256+' page '+model.page+'\n'+model.assumptions.map(s=>'// '+s).join('\n')+'\n$fn=128;\n'+(model.template==='box'?`cube([${fmt(d.length)},${fmt(d.width)},${fmt(d.height)}]);`:`difference() { cylinder(d=${fmt(d.outer)},h=${fmt(d.height)}); translate([0,0,-0.01]) cylinder(d=${fmt(d.inner)},h=${fmt(d.height+.02)}); }`)+'\n';}
+function dimensionLine(x1,y1,x2,y2,label){return `<g stroke="#215f49" fill="none" stroke-width="1.3"><path d="M${x1},${y1}L${x2},${y2}" marker-start="url(#dimArrow)" marker-end="url(#dimArrow)"/></g><text x="${(x1+x2)/2}" y="${(y1+y2)/2-8}" text-anchor="middle">${esc(label)}</text>`;}
+export function modelSVG(model){
+ if(model.status!=='reference_only')return '';
+ const d=model.dimensions,diameter=d.outer||d.width,span=d.length||diameter,scale=230/Math.max(span,diameter),w=span*scale,h=diameter*scale,cx=190,cy=200;
+ const drawing=model.template==='box'?`<rect x="${cx-w/2}" y="${cy-h/2}" width="${w}" height="${h}" fill="#dceee5" stroke="#235b46"/>`:`<path d="M ${cx-diameter*scale/2},${cy} a${diameter*scale/2},${diameter*scale/2} 0 1,0 ${diameter*scale},0 a${diameter*scale/2},${diameter*scale/2} 0 1,0 -${diameter*scale},0 M ${cx-d.inner*scale/2},${cy} a${d.inner*scale/2},${d.inner*scale/2} 0 1,0 ${d.inner*scale},0 a${d.inner*scale/2},${d.inner*scale/2} 0 1,0 -${d.inner*scale},0" fill-rule="evenodd" fill="#dceee5" stroke="#235b46"/>`;
+ const sideScale=230/Math.max(d.height,span),sideW=span*sideScale,sideH=Math.max(1,d.height*sideScale);
+ return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 400" role="img" aria-label="由所选尺寸生成的二维局部几何" style="font:13px sans-serif;background:white"><defs><marker id="dimArrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10" fill="none" stroke="#215f49"/></marker></defs><text x="20" y="26">${esc(model.template_label)} · 名义值 · 毫米 · 非制造图</text><text x="190" y="65" text-anchor="middle">俯视</text><text x="565" y="65" text-anchor="middle">侧视（单独缩放）</text>${drawing}${dimensionLine(cx-w/2,cy+h/2+30,cx+w/2,cy+h/2+30,(model.template==='box'?'长 ':'外径 Ø')+fmt(span))}${model.template!=='box'?dimensionLine(cx-d.inner*scale/2,cy,cx+d.inner*scale/2,cy,'内径 Ø'+fmt(d.inner)):`<path d="M${cx-w/2-22},${cy-h/2}v${h}" stroke="#215f49" marker-start="url(#dimArrow)" marker-end="url(#dimArrow)"/><text transform="translate(${cx-w/2-30},${cy}) rotate(-90)" text-anchor="middle">宽 ${fmt(d.width)}</text>`}<rect x="${565-sideW/2}" y="${cy-sideH/2}" width="${sideW}" height="${sideH}" fill="#dceee5" stroke="#235b46"/>${model.template==='box'?'':`<path d="M${565-d.inner*sideScale/2},${cy-sideH/2}v${sideH} M${565+d.inner*sideScale/2},${cy-sideH/2}v${sideH}" stroke="#879b90" stroke-dasharray="5 3"/>`}<text x="565" y="${cy+sideH/2+30}" text-anchor="middle">${model.template==='ring'?'厚度':'高度/轴向长度'} ${fmt(d.height)}</text><text x="20" y="385" fill="#8b5f26">未包含真实外轮廓、过渡、倒角和制造工艺；不能据此判定可复用。</text></svg>`;
+}
+export function projectedModelSVG(model,angle=35,tilt=55){
+ if(model.status!=='reference_only')return '';
+ angle=Number(angle);tilt=Number(tilt);if(!Number.isFinite(angle)||!Number.isFinite(tilt))throw Error('旋转角度无效');
+ const a=angle*Math.PI/180,t=tilt*Math.PI/180,project=([x,y,z])=>{const xx=x*Math.cos(a)-y*Math.sin(a),yy=x*Math.sin(a)+y*Math.cos(a);return [xx,yy*Math.cos(t)-z*Math.sin(t),yy*Math.sin(t)+z*Math.cos(t)];};
+ const faces=model.triangles.map(tr=>tr.map(project)),pts=faces.flat(),xs=pts.map(v=>v[0]),ys=pts.map(v=>v[1]),minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys),s=Math.min(530/(maxX-minX||1),280/(maxY-minY||1));
+ faces.sort((a,b)=>a.reduce((s,p)=>s+p[2],0)-b.reduce((s,p)=>s+p[2],0));
+ return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 400" role="img" aria-label="可旋转的局部三维几何"><rect width="760" height="400" fill="#f3f7f5"/><text x="20" y="28" fill="#245441" style="font:14px sans-serif">${esc(model.template_label)} · 候选名义尺寸 · 非完整零件</text>${faces.map((f,i)=>`<polygon points="${f.map(p=>`${fmt(380+(p[0]-(minX+maxX)/2)*s)},${fmt(210+(p[1]-(minY+maxY)/2)*s)}`).join(' ')}" fill="hsl(151 22% ${44+(i%6)*4}%)" stroke="#446e5d" stroke-width="0.2"/>`).join('')}<text x="20" y="382" fill="#85602b" style="font:12px sans-serif">缺失的部件没有填造。旋转查看仅用于理解这一局部形状。</text></svg>`;
+}
+export function reconstructionPanel(result,state={}){
+ const key=state.template||'ring',template=MODEL_TEMPLATES.find(t=>t.key===key)||MODEL_TEMPLATES[0],mapping=state.mapping||suggestMapping(result,template.key),model=createConstrainedModel(result,{template:template.key,mapping}),params=(result?.parameters||[]).filter(p=>p.status==='candidate');
+ return `<section class="panel reconstruction-panel"><div class="geometry-header"><div><h2>从参数建立 2D / 3D 局部几何</h2><p>选择有依据的参数映射。115 类参数字典不等于 115 类零件自动重建能力。</p></div></div><div class="reconstruction-controls"><label>形状模板<select id="modelTemplate">${MODEL_TEMPLATES.map(t=>`<option value="${t.key}" ${t.key===template.key?'selected':''}>${t.label}</option>`).join('')}</select></label>${template.slots.map(([slot,label,allowedKeys])=>`<label>${label}<select data-model-slot="${slot}"><option value="">选择对应尺寸</option>${params.filter(p=>allowedKeys.includes(p.key)).map(p=>`<option value="${esc(pid(p))}" ${mapping[slot]===pid(p)?'selected':''}>${esc(p.label)}${p.instance_label&&p.instance_label!==p.label?' · '+esc(p.instance_label):''} · ${esc(p.nominal_raw||p.value_raw)} ${esc(p.unit_raw||'单位待确认')}${p.limit?'（限值不可直接建模）':''}</option>`).join('')}</select></label>`).join('')}</div><p class="notice">${esc(template.description)}</p>${model.issues.length?`<div class="model-missing"><h3>当前不能生成这一形状</h3><ul>${model.issues.map(s=>`<li>${esc(s)}</li>`).join('')}</ul><p>不会把“最大长度”当实际长度，也不会用导线面积或未知单位代替直径。</p></div>`:`<div class="model-views"><div>${modelSVG(model)}</div><div><div id="model3dPreview">${projectedModelSVG(model,state.angle??35,state.tilt??55)}</div><div class="model-rotation"><label>水平旋转<input id="modelAngle" type="range" min="0" max="360" value="${Number(state.angle??35)}"></label><label>俯仰<input id="modelTilt" type="range" min="10" max="170" value="${Number(state.tilt??55)}"></label></div></div></div><div class="flex"><button id="modelExportSVG">导出 2D SVG</button><button id="modelExportSTL">导出参考 STL</button><button id="modelExportSCAD">导出参数化 SCAD</button><button id="modelExportBasis">导出建模依据 JSON</button></div><p class="model-warning">这是一组候选尺寸对应的局部理想化模型。外观吻合不能证明工艺可复用，尺寸、公差、材料、热处理、表面处理和装配条件仍需分别核对。</p>`}<details><summary>建模依据与未确定内容</summary><pre>${esc(JSON.stringify({...model,triangles:undefined},null,2))}</pre></details></section>`;
+}
+export function compareGeometry(source,target){
+ const left=(source?.parameters||[]).filter(p=>p.status==='candidate'),right=(target?.parameters||[]).filter(p=>p.status==='candidate');
+ return left.map(a=>{const matches=right.filter(b=>b.key===a.key),base={key:a.key,label:a.label,source_id:pid(a),source_value:a.value_raw,target_value:matches.map(p=>p.value_raw).join(' / ')};
+ if(matches.length!==1||left.filter(p=>p.key===a.key).length!==1)return {...base,status:'ambiguous',message:matches.length?'同类参数不止一个，需要指定同一部位、视图和工作状态':'目标图纸未识别对应参数'};
+ const b=matches[0];try{const av=dimensionInMm(a).value,bv=dimensionInMm(b).value;return {...base,target_id:pid(b),delta_mm:bv-av,status:Math.abs(av-bv)<1e-8?'nominal_equal':'different',message:Math.abs(av-bv)<1e-8?'名义尺寸一致；部位对应、公差与工艺仍待确认':'名义尺寸存在差异，不能据此直接复用'};}catch{return {...base,status:'unresolved',message:'单位、限值、范围或尺寸类型需单独核对，未自动比较'};}});
+}
+export function reusePanel(source,target,documents,currentId,targetId){
+ const rows=target?compareGeometry(source,target):[];
+ return `<section class="panel"><h2>复用前逐项核对</h2><label>对比另一份图纸 <select id="geometryCompareDoc"><option value="">选择已识别的图纸</option>${documents.filter(d=>d.id!==currentId&&d.geometryResult).map(d=>`<option value="${esc(d.id)}" ${d.id===targetId?'selected':''}>${esc(d.name)}</option>`).join('')}</select></label><p>按参数类别找候选对应关系，同一类别的多个孔或部件不自动合并。不会从一个相似模型直接给出“可工艺复用”。</p>${target?`<div class="table-scroll"><table><thead><tr><th>参数</th><th>当前图</th><th>对比图</th><th>核对结论</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.label)}</td><td>${esc(r.source_value)}</td><td>${esc(r.target_value||'未识别')}</td><td>${esc(r.message)}${r.status==='different'?`（差值 ${fmt(r.delta_mm)} mm）`:''}</td></tr>`).join('')}</tbody></table></div>`:''}<p class="notice">工艺复用结论：待工程确认。尚需核对部位对应、尺寸极限/配合、形位公差、材料、镀层、加工方式及设备条件。</p></section>`;
+}

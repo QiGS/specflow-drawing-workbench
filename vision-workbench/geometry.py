@@ -53,7 +53,7 @@ def stage_observations(stage,document_sha256,page):
     if not observations:raise ValueError('No stage-one readable observations for selected page')
     return observations
 
-def validate(payload,old_observations,document_sha256,page):
+def validate_legacy(payload,old_observations,document_sha256,page):
     if not isinstance(payload,dict) or set(payload)!={'schema_version','observations','parameters'} or payload['schema_version']!=VERSION:raise ValueError('Unexpected geometry response contract')
     observations=copy.deepcopy(old_observations)
     added=payload['observations']
@@ -110,6 +110,12 @@ def validate(payload,old_observations,document_sha256,page):
             'parameters':result,'observations':list(observations.values()),'human_review_required':True,
             'validation_scope':'format_numeric_citations_only_not_geometry_correctness','coordinate_space':'full_page_normalized_top_left'}
 
+def validate(payload,old_observations,document_sha256,page):
+    if isinstance(payload,dict) and payload.get('schema_version')=='geometry-2.0':
+        from geometry_v2 import validate as validate_current
+        return validate_current(payload,old_observations,document_sha256,page)
+    return validate_legacy(payload,old_observations,document_sha256,page)
+
 def document_image(path,page,max_edge=4096):
     data=Path(path).read_bytes()
     if not data or len(data)>30*1024*1024:raise ValueError('Original document must be within 30 MiB')
@@ -130,21 +136,44 @@ def document_image(path,page,max_edge=4096):
     if len(encoded)>20*1024*1024:raise ValueError('Rendered image exceeds 20 MiB')
     return sha(data),encoded
 
-def run(config,document,stage,page=1,transport=http_transport):
+def geometry_images(encoded,config):
+    """Deterministic full-page and four overlapping detail tiles, never data synthesis."""
+    with Image.open(io.BytesIO(encoded)) as opened:
+        if opened.width*opened.height>50_000_000:raise ValueError('Geometry image exceeds pixel limit')
+        image=opened.convert('RGB')
+    width,height=image.size
+    pairs=[({'image_id':'full_page','source_region':{'x':0,'y':0,'width':1,'height':1},'size':[width,height],'sha256':sha(encoded)},encoded)]
+    regions=[(0,0,.6,.6),(.4,0,1,.6),(0,.4,.6,1),(.4,.4,1,1)]
+    for number,(left,top,right,bottom) in enumerate(regions[:max(0,min(4,config.max_images-1))],1):
+        x,y,x2,y2=round(left*width),round(top*height),round(right*width),round(bottom*height)
+        tile=image.crop((x,y,x2,y2))
+        out=io.BytesIO();tile.save(out,format='PNG');data=out.getvalue()
+        source={'image_id':f'zoom_{number}','source_region':{'x':x/width,'y':y/height,'width':(x2-x)/width,'height':(y2-y)/height},'size':[x2-x,y2-y],'sha256':sha(data)}
+        pairs.append((source,data))
+    if sum(len(data) for _,data in pairs)>config.max_image_payload_bytes:
+        raise ValueError('Geometry full-page and tile payload exceeds application limit; reduce max_edge or max_images')
+    return pairs
+
+def run(config,document,stage=None,page=1,transport=http_transport):
     config.validate()
     document_hash,encoded=document_image(document,page,config.max_edge)
     return run_prepared(config,encoded,document_hash,stage,page,transport)
 
-def run_prepared(config,encoded,document_hash,stage,page=1,transport=http_transport):
+def run_prepared(config,encoded,document_hash,stage=None,page=1,transport=http_transport):
     config.validate()
-    observations=stage_observations(stage,document_hash,page)
-    context={'requested_parameters':PARAMETERS,'page':page,'stage_one_observations':list(observations.values())}
+    observations=stage_observations(stage,document_hash,page) if stage is not None else {}
+    from geometry_v2 import CATALOG, PROMPT as CURRENT_PROMPT, VERSION as CURRENT_VERSION
+    context={'parameter_catalog':CATALOG,'stage_one_used':stage is not None,'page':page,'stage_one_observations':list(observations.values())}
+    pairs=geometry_images(encoded,config)
+    context['source_images']=[source for source,_ in pairs]
+    content=[{'type':'text','text':json.dumps(context,ensure_ascii=False,separators=(',',':'))}]
+    for source,data in pairs:
+        content.append({'type':'text','text':'The following exact source image: '+json.dumps(source,separators=(',',':'))+'. Return coordinates relative to full_page, not this tile.'})
+        content.append({'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(data).decode()}})
     request=config.request_parameters()
-    request['messages']=[{'role':'system','content':PROMPT},{'role':'user','content':[
-        {'type':'text','text':json.dumps(context,ensure_ascii=False,separators=(',',':'))},
-        {'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(encoded).decode()}}]}]
+    request['messages']=[{'role':'system','content':CURRENT_PROMPT},{'role':'user','content':content}]
     body=json.dumps(request,ensure_ascii=False,separators=(',',':')).encode()
-    audit={'operation':'associate_geometry','prompt_version':VERSION,'document_sha256':document_hash,'page':page,'rendered_image_sha256':sha(encoded),'request_sha256':sha(body),'provider':config.audit()}
+    audit={'operation':'associate_geometry','prompt_version':CURRENT_VERSION,'stage_one_used':stage is not None,'image_sources':[source for source,_ in pairs],'image_payload_bytes':sum(len(data) for _,data in pairs),'document_sha256':document_hash,'page':page,'rendered_image_sha256':sha(encoded),'request_sha256':sha(body),'provider':config.audit()}
     start=time.monotonic()
     try:status,raw=transport(config.base_url.rstrip('/')+'/chat/completions',{'Content-Type':'application/json','Authorization':'Bearer '+config.api_key},body,config.timeout)
     except Exception as exc:raise ProviderFailure('geometry_transport_error',str(exc),audit,secret=config.api_key) from None
@@ -164,21 +193,23 @@ def run_prepared(config,encoded,document_hash,stage,page=1,transport=http_transp
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--document',required=True);p.add_argument('--stage-one',required=True);p.add_argument('--page',type=int,default=1)
+    p.add_argument('--document',required=True);p.add_argument('--stage-one',help='Optional previously validated transcription for the same source page');p.add_argument('--page',type=int,default=1)
     p.add_argument('--model');p.add_argument('--output',required=True);p.add_argument('--timeout',type=float,default=180)
     p.add_argument('--max-tokens',type=int,default=10000);p.add_argument('--max-edge',type=int,default=4096)
     a=p.parse_args();out=Path(a.output).expanduser().resolve()
     try:
         if out.exists():raise ValueError('Output directory exists; choose a new directory')
         config=Config.from_env(a.model,timeout=a.timeout,max_tokens=a.max_tokens,max_edge=a.max_edge,json_mode=True)
-        stage_path=Path(a.stage_one)
-        if stage_path.stat().st_size>10*1024*1024:raise ValueError('Stage-one JSON exceeds 10 MiB')
-        stage=strict_json(stage_path.read_text(encoding='utf8'))
+        stage=None
+        if a.stage_one:
+            stage_path=Path(a.stage_one)
+            if stage_path.stat().st_size>10*1024*1024:raise ValueError('Stage-one JSON exceeds 10 MiB')
+            stage=strict_json(stage_path.read_text(encoding='utf8'))
         out.mkdir(parents=True)
         result,audit=run(config,a.document,stage,a.page)
         for name,value in [('result.json',result),('audit.json',audit)]:
             with (out/name).open('x',encoding='utf8') as f:json.dump(value,f,ensure_ascii=False,indent=2)
-        print(json.dumps({'status':'unreviewed_candidates','candidates':sum(p['status']=='candidate' for p in result['parameters']),'unknown':sum(p['status']=='unknown' for p in result['parameters']),'output':str(out)},ensure_ascii=False));return 0
+        print(json.dumps({'status':'unreviewed_candidates','candidates':sum(p['status']=='candidate' for p in result['parameters']),'unknown':sum(p['status']!='candidate' for p in result['parameters']),'output':str(out)},ensure_ascii=False));return 0
     except ProviderFailure as exc:
         if out.is_dir():
             with (out/'failed-audit.json').open('x',encoding='utf8') as f:json.dump(exc.audit,f,ensure_ascii=False,indent=2)
